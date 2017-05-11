@@ -102,31 +102,11 @@ static segment_buffer_t extract_segment(mempage_t mp, mempage_int_t index) {
 	return buffer;
 }
 
-static union {
-    uint8_t *bytes[sizeof(mempage_int_t)];
-    mempage_int_t v;
-} encoding_buffer;
-
-static inline void encode(FILE* f, mempage_int_t value) {
-	encoding_buffer.v = value;
-	fwrite(encoding_buffer.bytes, 1, sizeof(mempage_int_t), f);
-}
-
-static inline mempage_int_t decode(const char** data) {
-	memcpy(encoding_buffer.bytes, *data, sizeof(mempage_int_t));
-	*data += sizeof(mempage_int_t);
-	return encoding_buffer.v;
-}
-
-static inline mempage_int_t decode(FILE* f) {
-	fread(encoding_buffer.bytes, 1, sizeof(mempage_int_t), f);
-	return encoding_buffer.v;
-}
-
 MEMPAGE_API mempage_t mempage_new(const char* data, mempage_int_t data_size) {
 	mempage_t mp = new mempage_s();
 
-	mp->segment_count = decode(&data);
+	memcpy(&mp->segment_count, data, sizeof(mempage_int_t));
+	data += sizeof(mempage_int_t);
 
 	mp->segment_sizes = new mempage_int_t[mp->segment_count];
 	memcpy(mp->segment_sizes, data, sizeof(mempage_int_t)*mp->segment_count);
@@ -139,7 +119,8 @@ MEMPAGE_API mempage_t mempage_new(const char* data, mempage_int_t data_size) {
 		accumulated += mp->segment_sizes[i];
 	}
 
-	mp->data_size = decode(&data);
+	memcpy(&mp->data_size, data, sizeof(mempage_int_t));
+	data += sizeof(mempage_int_t);
 
 	mp->data = (char*)malloc(mp->data_size);
 	memcpy(mp->data, data, mp->data_size);
@@ -153,14 +134,14 @@ MEMPAGE_API mempage_t mempage_from_file(const char* filename) {
 
 	mempage_t mp = new mempage_s();
 
-	mp->segment_count = decode(f);
+	fread(&mp->segment_count, sizeof(mempage_int_t), 1, f);
 	mp->segment_sizes = new mempage_int_t[mp->segment_count];
 	fread(mp->segment_sizes, sizeof(mempage_int_t), mp->segment_count, f);
 	mp->segment_offsets = new mempage_int_t[mp->segment_count];
-	mp->data_size = decode(f);
+	fread(&mp->data_size, sizeof(mempage_int_t), 1, f);
 	mp->data = (char*)malloc(mp->data_size);
 	fread(mp->data, 1, mp->data_size, f);
-
+	
 	mempage_int_t accumulated = 0;
 	for (mempage_int_t i = 0;i < mp->segment_count;i++) {
 		mp->segment_offsets[i] = accumulated;
@@ -220,17 +201,17 @@ MEMPAGE_API int mempage_write(const char* data, mempage_int_t data_size, const c
 	mempage_int_t segment_count = MP_SEGMENT_TOTAL(data_size);
 	mempage_int_t* segment_sizes = new mempage_int_t[segment_count];
 
-	encode(f, segment_count);
+	fwrite(&segment_count, sizeof(mempage_int_t), 1, f);
 	fwrite(f, sizeof(mempage_int_t), segment_count, f);
 
 	uLong pack_size;
 	int ret = 0;
 	mempage_int_t n = 0;
 	uLong total_size = 0;
-	encode(f, (mempage_int_t)total_size);
+	fwrite(&total_size, sizeof(mempage_int_t), 1, f);
 	for (mempage_int_t i = 0; i < data_size; i += MP_SEGMENT_SIZE) {
 		pack_size = MP_SEGMENT_SIZE;
-		ret = compress2((Bytef*)buffer, &pack_size, (const Bytef*)data + i, MP_SEGMENT_SIZE, Z_BEST_SPEED);
+		ret = compress2((Bytef*)buffer, &pack_size, (const Bytef*)data + i, (i + MP_SEGMENT_SIZE < data_size ) ? MP_SEGMENT_SIZE : (data_size - i), Z_BEST_SPEED);
 		if (ret) {
             fclose(f);
 			delete[] segment_sizes;
@@ -243,9 +224,9 @@ MEMPAGE_API int mempage_write(const char* data, mempage_int_t data_size, const c
 
 	fseek(f, 0, SEEK_SET);
 
-	encode(f, segment_count);
+	fwrite(&segment_count, sizeof(mempage_int_t), 1, f);
 	fwrite(segment_sizes, sizeof(mempage_int_t), segment_count, f);
-	encode(f, (mempage_int_t)total_size);
+	fwrite(&total_size, sizeof(mempage_int_t), 1, f);
 
 	fseek(f, 0, SEEK_END);
 
